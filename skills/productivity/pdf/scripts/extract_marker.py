@@ -16,7 +16,24 @@ Usage:
 import sys
 import os
 
+def _select_device():
+    """marker/surya only auto-pick cuda -> mps -> cpu. When tools/hw_probe verifies an Intel CPU,
+    an Intel iGPU and a working torch.xpu, export TORCH_DEVICE=xpu (a user-set TORCH_DEVICE wins).
+    Silent no-op when the Hermes tree isn't importable from here (e.g. a copied skill)."""
+    try:
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), *([".."] * 4)))
+        if root not in sys.path:
+            sys.path.append(root)
+        from tools.hw_probe import apply_document_ocr_device
+        device = apply_document_ocr_device()
+        if device:
+            print(f"marker: using TORCH_DEVICE={device}", file=sys.stderr)
+    except Exception:
+        pass
+
+
 def convert(path, output_dir=None, output_format="markdown", use_llm=False):
+    _select_device()  # must precede the marker imports below
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
     from marker.config.parser import ConfigParser

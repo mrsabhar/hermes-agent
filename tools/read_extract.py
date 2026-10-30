@@ -205,12 +205,6 @@ def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
             return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
         except Exception as hosted_exc:
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
-    # Local fallback: RapidOCR on OpenVINO (tools/ocr_local.py); None when off/unavailable.
-    from tools.ocr_local import engine_name, ocr_pdf_pages
-    text = ocr_pdf_pages(path, pages)
-    if text:
-        return (f"[OCR: scanned pages recognized locally ({engine_name()}); "
-                "text may contain recognition errors.]\n" + text)
     return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it
 
 

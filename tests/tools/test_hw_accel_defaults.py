@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tools import browser_launcher as launcher
-from tools import ocr_local
+from tools import hw_probe
 
 
 def _argv(**kw):
@@ -27,17 +27,6 @@ def test_disable_gpu_in_extra_args_wins(monkeypatch):
     monkeypatch.delenv("HERMES_BROWSER_GPU_RASTER", raising=False)
     argv = _argv(extra_args=["--disable-gpu"])
     assert "--enable-gpu-rasterization" not in argv and "--disable-gpu" in argv
-
-
-def test_ocr_engine_resolution(monkeypatch):
-    monkeypatch.delenv("HERMES_LOCAL_OCR_ENGINE", raising=False)
-    monkeypatch.setattr(ocr_local, "_openvino_importable", lambda: True)
-    assert ocr_local.resolve_engine() == "openvino"
-    monkeypatch.setattr(ocr_local, "_openvino_importable", lambda: False)
-    assert ocr_local.resolve_engine() == "onnxruntime"
-    monkeypatch.setenv("HERMES_LOCAL_OCR_ENGINE", "off")
-    assert ocr_local.resolve_engine() == "off"
-    assert ocr_local.ocr_pdf_pages("missing.pdf") is None
 
 
 def _load_pixel_video():
@@ -70,3 +59,33 @@ def test_qsv_env_off(monkeypatch):
     monkeypatch.setenv("HERMES_FFMPEG_HWACCEL", "off")
     monkeypatch.setattr(mod, "_QSV_OK", True)
     assert mod._qsv_available() is False
+
+
+def _fake_probe(monkeypatch, *, intel=True, igpu=True, xpu=True):
+    info = {"cpu": {"vendor": "GenuineIntel" if intel else "AuthenticAMD", "name": "x", "is_intel": intel},
+            "intel_gpus": [], "intel_igpu_present": igpu, "openvino_devices": [], "torch_xpu": xpu}
+    monkeypatch.setattr(hw_probe, "probe", lambda: info)
+    monkeypatch.delenv("HERMES_DOC_DEVICE", raising=False)
+    monkeypatch.delenv("TORCH_DEVICE", raising=False)
+
+
+@pytest.mark.parametrize("intel,igpu,xpu,expect", [
+    (True, True, True, "xpu"), (False, True, True, None), (True, False, True, None), (True, True, False, None)])
+def test_xpu_only_when_every_check_passes(monkeypatch, intel, igpu, xpu, expect):
+    pytest.importorskip("torch")
+    import torch
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    _fake_probe(monkeypatch, intel=intel, igpu=igpu, xpu=xpu)
+    assert hw_probe.recommend_torch_device() == expect
+
+
+def test_user_torch_device_not_overridden(monkeypatch):
+    _fake_probe(monkeypatch)
+    monkeypatch.setenv("TORCH_DEVICE", "cpu")
+    assert hw_probe.apply_document_ocr_device() is None
+
+
+def test_explicit_override(monkeypatch):
+    _fake_probe(monkeypatch, intel=False, igpu=False, xpu=False)
+    monkeypatch.setenv("HERMES_DOC_DEVICE", "cpu")
+    assert hw_probe.recommend_torch_device() == "cpu"
