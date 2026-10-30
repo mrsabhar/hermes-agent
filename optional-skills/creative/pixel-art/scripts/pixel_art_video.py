@@ -28,6 +28,42 @@ from PIL import Image, ImageDraw
 
 # ── Pixel drawing helpers ──────────────────────────────────────────────
 
+_QSV_OK = None
+
+
+def _qsv_available():
+    """True when ffmpeg's h264_qsv (Intel oneVPL/QSV) really encodes on this host. Probed once with
+    a tiny encode, since the encoder is listed even without an Intel GPU/driver. Override with
+    HERMES_FFMPEG_HWACCEL=off (default auto)."""
+    global _QSV_OK
+    if os.environ.get("HERMES_FFMPEG_HWACCEL", "auto").strip().lower() in ("off", "0", "false", "none"):
+        return False
+    if _QSV_OK is None:
+        try:
+            _QSV_OK = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "color=size=128x128:rate=1:duration=1", "-frames:v", "1",
+                 "-c:v", "h264_qsv", "-f", "null", "-"],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _QSV_OK = False
+    return _QSV_OK
+
+
+def _encode_mp4(fps, frame_pattern, output_path):
+    """PNG frames -> MP4: Intel QSV (oneVPL) when it works, libx264 otherwise (also if QSV fails)."""
+    # yuv420p/nv12 need even dimensions; pad odd-sized frames by one pixel.
+    base = ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-i", frame_pattern,
+            "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]
+    if _qsv_available():
+        hw = base + ["-c:v", "h264_qsv", "-pix_fmt", "nv12", "-global_quality", "18", output_path]
+        if subprocess.run(hw, stdin=subprocess.DEVNULL).returncode == 0:
+            return
+    subprocess.run(base + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", output_path],
+                   stdin=subprocess.DEVNULL, check=True)
+
+
 def _px(draw, x, y, color, size=2):
     x, y = int(x), int(y)
     W, H = draw.im.size
@@ -294,14 +330,7 @@ def pixel_art_video(
                 draw_fn(draw, state, t, W, H)
             canvas.save(os.path.join(frames_dir, f"frame_{frame_idx:04d}.png"))
 
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error",
-             "-framerate", str(fps),
-             "-i", os.path.join(frames_dir, "frame_%04d.png"),
-             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
-             output_path],
-            stdin=subprocess.DEVNULL, check=True,
-        )
+        _encode_mp4(fps, os.path.join(frames_dir, "frame_%04d.png"), output_path)
 
         gif_path = None
         if export_gif:

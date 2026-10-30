@@ -222,6 +222,22 @@ def _resolve_headed(headed: Optional[bool], env: dict) -> bool:
     return _has_display(env) or not sys.platform.startswith("linux")
 
 
+# Hardware rasterization: headless Chromium otherwise tends to land on software raster
+# (SwiftShader/Skia CPU) on hosts with a usable GPU. Chromium still falls back to software on its
+# own where no GPU exists. Opt out with ``browser.gpu_raster: false`` or HERMES_BROWSER_GPU_RASTER=0,
+# or by putting --disable-gpu in ``browser.chromium_args``.
+GPU_RASTER_FLAGS: tuple[str, ...] = ("--enable-gpu-rasterization", "--ignore-gpu-blocklist", "--enable-zero-copy")
+
+
+def _gpu_raster_enabled() -> bool:
+    import os
+    env = os.environ.get("HERMES_BROWSER_GPU_RASTER", "").strip().lower()
+    if env:
+        return env not in ("0", "false", "no", "off")
+    from tools.browser_session_cloud import browser_cfg
+    return browser_cfg("gpu_raster", True, lambda v: True if v is None else bool(v))
+
+
 def _configured_chromium_args() -> list[str]:
     from tools.browser_session_cloud import chromium_args
     return chromium_args()
@@ -244,6 +260,8 @@ def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, 
     configured = _configured_chromium_args()
     if sandbox_bypass and needs_chromium_sandbox_bypass():
         argv += [flag for flag in CHROMIUM_SANDBOX_BYPASS_ARGS if flag not in configured]
+    if _gpu_raster_enabled() and not any(a.startswith("--disable-gpu") for a in (*configured, *extra_args)):
+        argv += [flag for flag in GPU_RASTER_FLAGS if flag not in configured]
     argv += [str(a) for a in extra_args]
     argv += configured
     argv.append("about:blank")

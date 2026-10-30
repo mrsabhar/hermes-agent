@@ -431,6 +431,7 @@ DEFAULT_CONFIG = {
         # Persistent Chromium profile directory shared by local sessions; "" = a fresh throwaway
         # profile per session.
         "user_data_dir": "",
+        "gpu_raster": True,  # GPU rasterization flags on local Chromium launches (false = Chromium's default)
         "chromium_args": [],  # extra Chromium flags for local sessions, e.g. ["--lang=de"]
         # Cloud provider: LAN/localhost URLs open in a local Chromium (ignores allow_private_urls; False refuses)
         "auto_local_for_private_urls": True,
