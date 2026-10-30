@@ -21,6 +21,7 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from PIL import Image, ImageDraw
@@ -34,11 +35,21 @@ _QSV_OK = None
 def _qsv_available():
     """True when ffmpeg's h264_qsv (Intel oneVPL/QSV) really encodes on this host. Probed once with
     a tiny encode, since the encoder is listed even without an Intel GPU/driver. Override with
-    HERMES_FFMPEG_HWACCEL=off (default auto)."""
+    HERMES_FFMPEG_HWACCEL=off (default auto; auto = Intel CPUs only via HERMES_OPT_LIBS)."""
     global _QSV_OK
     if os.environ.get("HERMES_FFMPEG_HWACCEL", "auto").strip().lower() in ("off", "0", "false", "none"):
         return False
     if _QSV_OK is None:
+        try:  # QSV is Intel-only: skip the probe encode on other CPUs when Hermes' policy says so
+            root = os.path.abspath(os.path.join(os.path.dirname(__file__), *([".."] * 4)))
+            if root not in sys.path:
+                sys.path.append(root)
+            from tools.hw_probe import optimized_libs_enabled
+            if not optimized_libs_enabled():
+                _QSV_OK = False
+                return False
+        except Exception:
+            pass  # tree not importable (copied skill): fall through to the real-encode probe
         try:
             _QSV_OK = subprocess.run(
                 ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",

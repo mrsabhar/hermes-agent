@@ -117,6 +117,23 @@ def probe() -> dict[str, Any]:
     }
 
 
+@functools.lru_cache(maxsize=1)
+def is_intel_cpu() -> bool:
+    return bool(_cpu_info()["is_intel"])
+
+
+def optimized_libs_enabled() -> bool:
+    """The one switch for Hermes' Intel-optimized paths (cv2 image resize, QSV encode, GPU raster,
+    page-parallel OCR). HERMES_OPT_LIBS=auto (default: on iff Intel CPU) | on | off — ``on`` lets
+    a non-Intel host run the same paths for A/B comparison."""
+    choice = os.environ.get("HERMES_OPT_LIBS", "auto").strip().lower()
+    if choice in ("on", "1", "true", "yes"):
+        return True
+    if choice in ("off", "0", "false", "no"):
+        return False
+    return is_intel_cpu()
+
+
 def recommend_torch_device() -> Optional[str]:
     """Device name to export as TORCH_DEVICE, or None to leave marker/surya's own auto-detect."""
     choice = os.environ.get("HERMES_DOC_DEVICE", "auto").strip().lower()

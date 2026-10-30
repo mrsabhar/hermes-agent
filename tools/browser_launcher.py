@@ -224,18 +224,30 @@ def _resolve_headed(headed: Optional[bool], env: dict) -> bool:
 
 # Hardware rasterization: headless Chromium otherwise tends to land on software raster
 # (SwiftShader/Skia CPU) on hosts with a usable GPU. Chromium still falls back to software on its
-# own where no GPU exists. Opt out with ``browser.gpu_raster: false`` or HERMES_BROWSER_GPU_RASTER=0,
+# own where no GPU exists. Default "auto" = Intel CPUs only. Force with ``browser.gpu_raster: true|false`` or HERMES_BROWSER_GPU_RASTER=1|0,
 # or by putting --disable-gpu in ``browser.chromium_args``.
 GPU_RASTER_FLAGS: tuple[str, ...] = ("--enable-gpu-rasterization", "--ignore-gpu-blocklist", "--enable-zero-copy")
 
 
 def _gpu_raster_enabled() -> bool:
+    """env HERMES_BROWSER_GPU_RASTER, else ``browser.gpu_raster``: true | false | "auto" (default:
+    on when tools.hw_probe.optimized_libs_enabled(), i.e. an Intel CPU)."""
     import os
     env = os.environ.get("HERMES_BROWSER_GPU_RASTER", "").strip().lower()
-    if env:
-        return env not in ("0", "false", "no", "off")
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
     from tools.browser_session_cloud import browser_cfg
-    return browser_cfg("gpu_raster", True, lambda v: True if v is None else bool(v))
+    setting = browser_cfg("gpu_raster", "auto", lambda v: "auto" if v is None else v)
+    if isinstance(setting, bool):
+        return setting
+    if str(setting).strip().lower() in ("true", "on", "yes"):
+        return True
+    if str(setting).strip().lower() in ("false", "off", "no"):
+        return False
+    from tools.hw_probe import optimized_libs_enabled
+    return optimized_libs_enabled()
 
 
 def _configured_chromium_args() -> list[str]:

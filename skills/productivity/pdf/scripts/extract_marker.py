@@ -32,7 +32,7 @@ def _select_device():
         pass
 
 
-def convert(path, output_dir=None, output_format="markdown", use_llm=False):
+def convert(path, output_dir=None, output_format="markdown", use_llm=False, page_range=None):
     _select_device()  # must precede the marker imports below
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
@@ -41,6 +41,8 @@ def convert(path, output_dir=None, output_format="markdown", use_llm=False):
     config_dict = {}
     if use_llm:
         config_dict["use_llm"] = True
+    if page_range:
+        config_dict["page_range"] = page_range  # marker syntax, 0-based, e.g. "0-7"
 
     config_parser = ConfigParser(config_dict)
     models = create_model_dict()
@@ -67,6 +69,85 @@ def convert(path, output_dir=None, output_format="markdown", use_llm=False):
         print(f"\nSaved {len(rendered.images)} image(s) to {output_dir}/", file=sys.stderr)
 
 
+def _page_count(path):
+    try:
+        import pymupdf
+        with pymupdf.open(path) as doc:
+            return doc.page_count
+    except Exception:
+        pass
+    try:
+        import pypdfium2
+        pdf = pypdfium2.PdfDocument(path)
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
+    except Exception:
+        return 0
+
+
+MIN_PAGES_PER_WORKER = 4
+
+
+def plan_workers(requested, pages, optimized=None, cpus=None):
+    """Worker count for page-parallel extraction. ``requested`` > 0 is honoured (capped by pages);
+    0 = auto: 1 unless Hermes' optimized-library policy is on (Intel CPU) AND the models run on CPU,
+    then one worker per 8 logical CPUs (max 4). Each worker loads its own models (GBs of RAM)."""
+    cpus = cpus or os.cpu_count() or 1
+    if requested and requested > 0:
+        n = requested
+    else:
+        if optimized is None:
+            try:
+                root = os.path.abspath(os.path.join(os.path.dirname(__file__), *([".."] * 4)))
+                if root not in sys.path:
+                    sys.path.append(root)
+                from tools.hw_probe import optimized_libs_enabled
+                optimized = optimized_libs_enabled()
+            except Exception:
+                optimized = False
+        on_cpu = os.environ.get("TORCH_DEVICE", "cpu").lower() == "cpu"
+        n = min(4, max(1, cpus // 8)) if optimized and on_cpu else 1
+    return max(1, min(n, pages // MIN_PAGES_PER_WORKER))
+
+
+def split_ranges(pages, workers):
+    """Contiguous 0-based inclusive (start, end) ranges covering ``pages`` pages."""
+    base, extra = divmod(pages, workers)
+    out, start = [], 0
+    for i in range(workers):
+        size = base + (1 if i < extra else 0)
+        out.append((start, start + size - 1))
+        start += size
+    return out
+
+
+def convert_parallel(path, workers, use_llm=False):
+    """Run ``workers`` child processes over disjoint page ranges and join their markdown in order."""
+    import subprocess
+    pages = _page_count(path)
+    workers = plan_workers(workers, pages)
+    if workers <= 1:
+        return None
+    threads = str(max(1, (os.cpu_count() or workers) // workers))
+    env = dict(os.environ, OMP_NUM_THREADS=threads, MKL_NUM_THREADS=threads)
+    procs = []
+    for lo, hi in split_ranges(pages, workers):
+        cmd = [sys.executable, os.path.abspath(__file__), path, "--workers", "1", "--page_range", f"{lo}-{hi}"]
+        if use_llm:
+            cmd.append("--use_llm")
+        procs.append(subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                                      text=True, encoding="utf-8"))
+    parts = []
+    for p in procs:
+        out, err = p.communicate()
+        if p.returncode != 0:
+            raise RuntimeError(f"marker worker failed: {err.strip()[-500:]}")
+        parts.append(out.rstrip("\n"))
+    return "\n\n".join(parts) + "\n"
+
+
 def check_requirements():
     """Check disk space before installing."""
     import shutil
@@ -88,6 +169,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", help="Directory to save extracted images")
     parser.add_argument("--json", action="store_true", help="Structured JSON output instead of markdown")
     parser.add_argument("--use_llm", action="store_true", help="LLM-boosted accuracy")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="Page-parallel worker processes (0 = auto: Intel CPU + CPU models only)")
+    parser.add_argument("--page_range", help="0-based pages, e.g. 0-7 (used by page-parallel workers)")
     parser.add_argument("--check", action="store_true", help="Check disk space requirements and exit")
     args = parser.parse_args()
 
@@ -97,9 +181,18 @@ if __name__ == "__main__":
     if not args.path:
         parser.error("path is required unless --check is given")
 
+    if (not args.json and not args.page_range and args.path.lower().endswith(".pdf")
+            and (args.workers != 1)):
+        _select_device()  # decide device first: plan_workers only parallelises CPU runs
+        merged = convert_parallel(args.path, args.workers, use_llm=args.use_llm)
+        if merged is not None:
+            print(merged)
+            sys.exit(0)
+
     convert(
         args.path,
         output_dir=args.output_dir,
         output_format="json" if args.json else "markdown",
         use_llm=args.use_llm,
+        page_range=args.page_range,
     )

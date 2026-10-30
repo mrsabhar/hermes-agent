@@ -488,7 +488,8 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 new_w = max(int(img.width * (64 / img.height)), 64)
             if (new_w, new_h) == prev_dims:
                 break
-            img = img.resize((new_w, new_h), Image.LANCZOS)
+            from tools.image_accel import resize as _resize
+            img = _resize(img, (new_w, new_h), Image.LANCZOS)
             prev_dims = (new_w, new_h)
             logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
         dims_ok = max_dimension is None or max(img.width, img.height) <= max_dimension
