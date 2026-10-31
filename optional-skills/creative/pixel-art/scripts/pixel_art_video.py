@@ -29,50 +29,35 @@ from PIL import Image, ImageDraw
 
 # ── Pixel drawing helpers ──────────────────────────────────────────────
 
-_QSV_OK = None
-
-
-def _qsv_available():
-    """True when ffmpeg's h264_qsv (Intel oneVPL/QSV) really encodes on this host. Probed once with
-    a tiny encode, since the encoder is listed even without an Intel GPU/driver. Override with
-    HERMES_FFMPEG_HWACCEL=off (default auto; auto = Intel CPUs only via HERMES_OPT_LIBS)."""
-    global _QSV_OK
-    if os.environ.get("HERMES_FFMPEG_HWACCEL", "auto").strip().lower() in ("off", "0", "false", "none"):
-        return False
-    if _QSV_OK is None:
-        try:  # QSV is Intel-only: skip the probe encode on other CPUs when Hermes' policy says so
-            root = os.path.abspath(os.path.join(os.path.dirname(__file__), *([".."] * 4)))
-            if root not in sys.path:
-                sys.path.append(root)
-            from tools.hw_probe import optimized_libs_enabled
-            if not optimized_libs_enabled():
-                _QSV_OK = False
-                return False
-        except Exception:
-            pass  # tree not importable (copied skill): fall through to the real-encode probe
-        try:
-            _QSV_OK = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-                 "-i", "color=size=128x128:rate=1:duration=1", "-frames:v", "1",
-                 "-c:v", "h264_qsv", "-f", "null", "-"],
-                stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
-            ).returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            _QSV_OK = False
-    return _QSV_OK
+def _accel():
+    """tools.ffmpeg_accel from the Hermes tree, or None (copied skill / tree not importable)."""
+    try:
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), *([".."] * 4)))
+        if root not in sys.path:
+            sys.path.append(root)
+        from tools import ffmpeg_accel
+        return ffmpeg_accel
+    except Exception:
+        return None
 
 
 def _encode_mp4(fps, frame_pattern, output_path):
-    """PNG frames -> MP4: Intel QSV (oneVPL) when it works, libx264 otherwise (also if QSV fails)."""
+    """PNG frames -> MP4: Intel QSV (oneVPL) when an Intel GPU + working h264_qsv are detected,
+    libx264 otherwise (also if the QSV run fails)."""
     # yuv420p/nv12 need even dimensions; pad odd-sized frames by one pixel.
-    base = ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-i", frame_pattern,
+    head = ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-i", frame_pattern,
             "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]
-    if _qsv_available():
-        hw = base + ["-c:v", "h264_qsv", "-pix_fmt", "nv12", "-global_quality", "18", output_path]
-        if subprocess.run(hw, stdin=subprocess.DEVNULL).returncode == 0:
-            return
-    subprocess.run(base + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", output_path],
-                   stdin=subprocess.DEVNULL, check=True)
+    sw = head + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", output_path]
+    accel = _accel()
+    hw = None
+    if accel:
+        enc = accel.video_encoder("libx264", 18)
+        if accel.uses_qsv(enc):
+            hw = head + enc + ["-pix_fmt", "nv12", output_path]
+    if accel:
+        accel.run(hw, sw, check=True)
+    else:
+        subprocess.run(sw, stdin=subprocess.DEVNULL, check=True)
 
 
 def _px(draw, x, y, color, size=2):

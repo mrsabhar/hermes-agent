@@ -1,5 +1,6 @@
 """GPU raster flags, local OpenVINO OCR engine choice, QSV encoder fallback."""
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -63,28 +64,29 @@ def _load_pixel_video():
     return mod
 
 
-def test_qsv_failure_falls_back_to_libx264(monkeypatch):
+def test_pixel_art_encode_prefers_qsv_then_falls_back(monkeypatch):
     mod = _load_pixel_video()
+    from tools import ffmpeg_accel as fa
     calls = []
-
-    class R:
-        def __init__(self, rc): self.returncode = rc
 
     def fake_run(cmd, **kw):
         calls.append(cmd)
-        return R(1 if "h264_qsv" in cmd else 0)
+        return subprocess.CompletedProcess(cmd, 1 if "h264_qsv" in cmd else 0)
 
-    monkeypatch.setattr(mod, "_QSV_OK", True)
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(fa, "video_encoder", lambda c, q=None: ["-c:v", "h264_qsv", "-global_quality", "18"])
+    monkeypatch.setattr(fa.subprocess, "run", fake_run)
     mod._encode_mp4(10, "f_%04d.png", "o.mp4")
     assert "h264_qsv" in calls[0] and "libx264" in calls[1]
 
 
-def test_qsv_env_off(monkeypatch):
+def test_pixel_art_encode_software_without_qsv(monkeypatch):
     mod = _load_pixel_video()
-    monkeypatch.setenv("HERMES_FFMPEG_HWACCEL", "off")
-    monkeypatch.setattr(mod, "_QSV_OK", True)
-    assert mod._qsv_available() is False
+    from tools import ffmpeg_accel as fa
+    calls = []
+    monkeypatch.setattr(fa, "video_encoder", lambda c, q=None: ["-c:v", "libx264", "-crf", "18"])
+    monkeypatch.setattr(fa.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+    mod._encode_mp4(10, "f_%04d.png", "o.mp4")
+    assert len(calls) == 1 and "libx264" in calls[0]
 
 
 def _fake_probe(monkeypatch, *, intel=True, igpu=True, xpu=True):

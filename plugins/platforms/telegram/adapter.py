@@ -310,10 +310,16 @@ def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
         seek = max(1, int((duration or 3) * 0.25))
         fd, out = tempfile.mkstemp(suffix=".jpg", prefix="hermes-tg-thumb-")
         os.close(fd)
-        proc = subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(seek), "-i", path, "-frames:v", "1",
-             "-vf", "scale=320:-2", "-q:v", "6", out],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
+        tail = ["-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "6", out]
+        sw = ["ffmpeg", "-y", "-ss", str(seek), "-i", path, *tail]
+        hw = None
+        with contextlib.suppress(Exception):  # Intel QSV decode when the iGPU + codec support it
+            from tools.ffmpeg_accel import decoder_args
+            dec = decoder_args(path)
+            hw = ["ffmpeg", "-y", *dec, "-ss", str(seek), "-i", path, *tail] if dec else None
+        from tools.ffmpeg_accel import run as _ffmpeg_run
+        proc = _ffmpeg_run(hw, sw, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=30)
         if proc.returncode != 0 or not os.path.getsize(out):
             with contextlib.suppress(OSError):
                 os.remove(out)
