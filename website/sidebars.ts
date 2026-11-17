@@ -827,6 +827,7 @@ const sidebars: SidebarsConfig = {
               ],
             },
             'developer-guide/creating-skills',
+            'developer-guide/ffmpeg-acceleration',
             'developer-guide/extending-the-cli',
           ],
         },

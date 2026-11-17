@@ -244,6 +244,26 @@ def _ensure_ffmpeg():
         )
 
 
+def _encode_mp4(pattern, output_path, fps, n_frames):
+    """PNG sequence -> H.264 MP4. Uses Intel Quick Sync when Hermes' ffmpeg_accel helper is importable
+    and a QSV test encode works (media.ffmpeg_hwaccel in config.yaml, default auto), else libx264."""
+    try:
+        from tools import ffmpeg_accel
+    except ImportError:  # standalone copy of the skill: plain software encode
+        ffmpeg_accel = None
+    if ffmpeg_accel is not None:
+        qsv, cpu = ffmpeg_accel.frames_commands(pattern, output_path, fps=fps, quality=18, frames=n_frames)
+        res = ffmpeg_accel.run(qsv, cpu)
+        if res["returncode"]:
+            raise subprocess.CalledProcessError(res["returncode"], cpu, stderr=res["stderr"])
+        return
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-i", pattern,
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", output_path],
+        stdin=subprocess.DEVNULL, check=True,
+    )
+
+
 def pixel_art_video(
     base_image,
     output_path,
@@ -294,14 +314,7 @@ def pixel_art_video(
                 draw_fn(draw, state, t, W, H)
             canvas.save(os.path.join(frames_dir, f"frame_{frame_idx:04d}.png"))
 
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error",
-             "-framerate", str(fps),
-             "-i", os.path.join(frames_dir, "frame_%04d.png"),
-             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
-             output_path],
-            stdin=subprocess.DEVNULL, check=True,
-        )
+        _encode_mp4(os.path.join(frames_dir, "frame_%04d.png"), output_path, fps, n_frames)
 
         gif_path = None
         if export_gif:

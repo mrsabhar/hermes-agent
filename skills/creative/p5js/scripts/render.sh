@@ -86,16 +86,27 @@ fi
 
 # Step 2: Encode to MP4
 echo "Step 2/2: Encoding MP4..."
-ffmpeg -y \
-  -framerate "$FPS" \
-  -i "$FRAME_DIR/frame-%04d.png" \
-  -c:v libx264 \
-  -preset slow \
-  -crf "$CRF" \
-  -pix_fmt yuv420p \
-  -movflags +faststart \
-  "$OUTPUT" \
-  2>"$FRAME_DIR/ffmpeg.log"
+# Prefer Hermes' Intel Quick Sync helper when it is importable (it uses the iGPU for long jobs and falls
+# back to libx264 by itself; media.ffmpeg_hwaccel in config.yaml controls it). Otherwise plain libx264.
+ACCEL_PY=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import tools.ffmpeg_accel" >/dev/null 2>&1; then ACCEL_PY="$cand"; break; fi
+done
+if [ -n "$ACCEL_PY" ]; then
+  "$ACCEL_PY" -m tools.ffmpeg_accel frames "$FRAME_DIR/frame-%04d.png" "$OUTPUT" \
+    --fps "$FPS" --quality "$CRF" --frames "$((FPS * DURATION))" >"$FRAME_DIR/ffmpeg.log" 2>&1
+else
+  ffmpeg -y \
+    -framerate "$FPS" \
+    -i "$FRAME_DIR/frame-%04d.png" \
+    -c:v libx264 \
+    -preset slow \
+    -crf "$CRF" \
+    -pix_fmt yuv420p \
+    -movflags +faststart \
+    "$OUTPUT" \
+    2>"$FRAME_DIR/ffmpeg.log"
+fi
 
 # Cleanup
 rm -rf "$FRAME_DIR"

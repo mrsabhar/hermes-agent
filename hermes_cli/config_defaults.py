@@ -480,6 +480,9 @@ DEFAULT_CONFIG = {
         "max_total_gb": 0,
         "install_state_retention_days": 14,  # installs/<key> of a missing checkout, unused this long, goes; 0 = never
     },
+    # ffmpeg hardware acceleration for Hermes' own video work and the skills that call tools.ffmpeg_accel.
+    # "auto" = Intel QSV (oneVPL) when a real test encode succeeds on this machine, else CPU; "off" = always CPU.
+    "media": {"ffmpeg_hwaccel": "auto"},
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
     # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.
