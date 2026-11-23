@@ -13,6 +13,55 @@ back to the CPU command if anything goes wrong.
 
 It is on by default (`media.ffmpeg_hwaccel: auto`). Machines without a working Intel GPU behave exactly as before.
 
+## Why Hermes should do this
+
+**The value.** A video job that stays on the Intel media engine uses a few CPU-seconds instead of a hundred. That
+leaves the CPU free for the local model and for whatever the user is doing, and it costs far less energy. Measured on
+one Panther Lake laptop (Arc B390, Windows 11):
+
+| Job | CPU path (libx264 medium) | Quick Sync | Change |
+|---|---|---|---|
+| 60 s of 4K to 1080p, all cores | 11.4 s, 168 CPU-s | 7.4 s, 6 CPU-s | 1.5x faster, 96% less CPU |
+| 30 s of 4K to 1080p, 2 E-cores only | 42.5 s | 4.6 s | 9x faster on a weak CPU |
+| 30 s 4K transcode, package energy | 111 J | 17 J | 6.5x less energy |
+| 1800 frames to MP4 (skill shape), 2 E-cores | 59.5 s | 18.6 s | 3.2x faster |
+| Quality at the same quality number | VMAF 78.1 | VMAF 80.6 | PSNR and SSIM equal, 6% fewer bits |
+
+Two honest caveats: at all cores `libx264 -preset veryfast` is a little faster in wall time than QSV for the 30 s
+transcode (3.8 s against 4.5 s), at about 15x the CPU; and this is one platform. The case for default-on is that the CPU
+stays free and cool, not that every job finishes sooner.
+
+**Why in Hermes, not in each skill.** Hand-written QSV is easy to get wrong, and the first attempt at this showed how:
+QSV decode with software filters was about 3x slower than the CPU, and the single-frame thumbnail command failed on every
+call and hung for hours on 4K input. One shared helper gives every skill the same measured command shape, one cached
+capability check, a timeout and a CPU fallback, and one config switch (`media.ffmpeg_hwaccel`). Machines without a
+working Intel GPU behave exactly as before.
+
+**What it does not change.** It is additive: the agent loop and the model path are untouched. Single-frame jobs stay on
+the CPU.
+
+### Top skills
+
+Ranked by how much of the user's wait and CPU the encode takes. Only the first two are wired and measured; the rest use the
+same encode shapes, so the helper applies directly, but their gains are expected, not measured.
+
+| Skill | Encode shape | Status | Why it matters |
+|---|---|---|---|
+| `p5js` (`scripts/render.sh`) | PNG frames to MP4, `-preset slow` | Wired, measured shape | Long generative renders; 30 fps 1080p+ |
+| `pixel-art` (`pixel_art_video.py`) | PNG frames to MP4 | Wired, measured | Tested end to end: 30 s 1080p, 450 frames |
+| `ai-presenter-video` (`finalize_delivery.sh`) | Video to video, libx264 | Candidate | Long final deliverables: the shape QSV wins most (96% less CPU) |
+| `scrollcraft` (`scripts/encode.sh`) | Frame sequences and video to MP4 | Candidate | Many encodes per project |
+| `ascii-video` | Raw RGB frames piped to libx264 | Candidate | Frame-sequence shape through a pipe; pipe path not yet measured |
+| `manim-video` | Rendered frames and concat | Candidate | Frame-sequence shape |
+| `hyperframes`, `auteur`, `kanban-video-orchestrator` | HTML or scene render, then encode | Candidate | Render time dominates; encode is the CPU share to remove |
+| Telegram video thumbnails | Single frame | Deliberately CPU | 117 ms on the CPU vs 511 ms with QSV start-up |
+
+### What we ask of the Hermes team
+
+1. Merge the helper and the `media.ffmpeg_hwaccel` key (additive, default `auto`, safe fallback).
+2. Move the candidate skills onto `tools.ffmpeg_accel`, starting with `ai-presenter-video` (largest expected gain).
+3. Accept other vendors' backends behind the same helper (VAAPI, NVENC, AMF, VideoToolbox) using the same probe, command shape and fallback contract. Only Intel has been measured here.
+
 ## Config
 
 ```yaml
